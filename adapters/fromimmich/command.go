@@ -386,6 +386,9 @@ func (fic *FromImmichCmd) getAssets(ctx context.Context, grpChan chan *assets.Gr
 		}
 
 		asset := a.AsAsset()
+		asset.SetNameInfo(fic.ic.GetInfo(asset.OriginalFileName))
+		asset.File = fshelper.FSName(fic.ifs, a.ID)
+
 		asset.FromApplication = &assets.Metadata{
 			FileName:    a.OriginalFileName,
 			Latitude:    a.ExifInfo.Latitude,
@@ -399,7 +402,6 @@ func (fic *FromImmichCmd) getAssets(ctx context.Context, grpChan chan *assets.Gr
 			Tags:        asset.Tags,
 		}
 		asset.UseMetadata(asset.FromApplication)
-		asset.File = fshelper.FSName(fic.ifs, a.ID)
 
 		// Record asset discovery
 		code := fileevent.DiscoveredImage
