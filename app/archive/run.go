@@ -38,6 +38,9 @@ func (ac *ArchiveCmd) Run(cmd *cobra.Command, adapter adapters.Reader) error {
 	if err != nil {
 		return err
 	}
+	if err := ac.dest.BuildIndex(ctx, log.Logger); err != nil {
+		return err
+	}
 
 	gChan := adapter.Browse(ctx)
 	errCount := 0
