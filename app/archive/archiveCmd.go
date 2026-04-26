@@ -17,8 +17,9 @@ import (
 type ArchiveCmd struct {
 	ArchivePath string
 
-	app  *app.Application
-	dest *folder.LocalAssetWriter
+	app        *app.Application
+	dest       *folder.LocalAssetWriter
+	indexCount int // number of files already in local archive (from BuildIndex)
 }
 
 func NewArchiveCommand(ctx context.Context, app *app.Application) *cobra.Command {

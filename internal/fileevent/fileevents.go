@@ -48,6 +48,7 @@ const (
 	ProcessedUploadUpgraded  // Server asset upgraded with input
 	ProcessedMetadataUpdated // Asset metadata updated on server
 	ProcessedFileArchived    // Asset successfully archived to disk
+	ProcessedFileMoved       // Asset moved or renamed on disk (archive rerun)
 
 	// ===== Asset Lifecycle Events - To DISCARDED =====
 	DiscardedServerDuplicate // Server already has this asset
@@ -95,6 +96,7 @@ var _code = map[Code]string{
 	ProcessedUploadUpgraded:  "server asset upgraded",
 	ProcessedMetadataUpdated: "metadata updated",
 	ProcessedFileArchived:    "file archived",
+	ProcessedFileMoved:       "file moved/renamed",
 
 	// To DISCARDED
 	DiscardedServerDuplicate: "server has duplicate",
@@ -139,6 +141,7 @@ var _logLevels = map[Code]slog.Level{
 	ProcessedUploadUpgraded:  slog.LevelInfo,
 	ProcessedMetadataUpdated: slog.LevelInfo,
 	ProcessedFileArchived:    slog.LevelInfo,
+	ProcessedFileMoved:       slog.LevelInfo,
 
 	// To DISCARDED
 	DiscardedServerDuplicate: slog.LevelInfo,

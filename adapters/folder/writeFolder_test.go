@@ -46,7 +46,7 @@ func newWriter(t *testing.T) (*LocalAssetWriter, fs.FS) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := w.BuildIndex(t.Context(), nil); err != nil {
+	if _, err := w.BuildIndex(t.Context(), nil); err != nil {
 		t.Fatal(err)
 	}
 	return w, destFS
@@ -74,8 +74,12 @@ func TestWriteAsset_NewAsset(t *testing.T) {
 	w, destFS := newWriter(t)
 
 	a := makeAsset(srcFS, "asset-a", "photo.jpg", checksumA, testDate)
-	if err := w.WriteAsset(t.Context(), a); err != nil {
+	outcome, err := w.WriteAsset(t.Context(), a)
+	if err != nil {
 		t.Fatal(err)
+	}
+	if outcome != OutcomeDownloaded {
+		t.Errorf("expected OutcomeDownloaded, got %v", outcome)
 	}
 
 	dir := path.Join("2025", "2025-01")
@@ -101,7 +105,7 @@ func TestWriteAsset_IdempotentRerun(t *testing.T) {
 	ctx := t.Context()
 
 	a1 := makeAsset(srcFS, "asset-a", "photo.jpg", checksumA, testDate)
-	if err := w.WriteAsset(ctx, a1); err != nil {
+	if _, err := w.WriteAsset(ctx, a1); err != nil {
 		t.Fatalf("first write: %v", err)
 	}
 
@@ -111,13 +115,17 @@ func TestWriteAsset_IdempotentRerun(t *testing.T) {
 
 	// Build a fresh writer with BuildIndex to simulate a new run
 	w2, _ := NewLocalAssetWriter(destFS, ".")
-	if err := w2.BuildIndex(ctx, nil); err != nil {
+	if _, err := w2.BuildIndex(ctx, nil); err != nil {
 		t.Fatal(err)
 	}
 
 	a2 := makeAsset(srcFS, "asset-a", "photo.jpg", checksumA, testDate)
-	if err := w2.WriteAsset(ctx, a2); err != nil {
+	outcome, err := w2.WriteAsset(ctx, a2)
+	if err != nil {
 		t.Fatalf("second write: %v", err)
+	}
+	if outcome != OutcomeSkipped {
+		t.Errorf("expected OutcomeSkipped on idempotent rerun, got %v", outcome)
 	}
 
 	info2, _ := fs.Stat(destFS, jsonPath)
@@ -145,20 +153,24 @@ func TestWriteAsset_MetadataUpdated(t *testing.T) {
 	ctx := t.Context()
 
 	a1 := makeAsset(srcFS, "asset-a", "photo.jpg", checksumA, testDate)
-	if err := w.WriteAsset(ctx, a1); err != nil {
+	if _, err := w.WriteAsset(ctx, a1); err != nil {
 		t.Fatal(err)
 	}
 
 	// Second run: asset now belongs to an album
 	w2, _ := NewLocalAssetWriter(destFS, ".")
-	if err := w2.BuildIndex(ctx, nil); err != nil {
+	if _, err := w2.BuildIndex(ctx, nil); err != nil {
 		t.Fatal(err)
 	}
 
 	a2 := makeAsset(srcFS, "asset-a", "photo.jpg", checksumA, testDate)
 	a2.FromApplication.Albums = []assets.Album{{Title: "Vacation"}}
-	if err := w2.WriteAsset(ctx, a2); err != nil {
+	outcome, err := w2.WriteAsset(ctx, a2)
+	if err != nil {
 		t.Fatal(err)
+	}
+	if outcome != OutcomeUpdated {
+		t.Errorf("expected OutcomeUpdated, got %v", outcome)
 	}
 
 	md := readSidecar(t, destFS, path.Join("2025", "2025-01", "photo.jpg.JSON"))
@@ -184,10 +196,10 @@ func TestWriteAsset_CollisionFallback(t *testing.T) {
 	aB.FromApplication.Checksum = ""
 	aB.Checksum = ""
 
-	if err := w.WriteAsset(ctx, aA); err != nil {
+	if _, err := w.WriteAsset(ctx, aA); err != nil {
 		t.Fatalf("write A: %v", err)
 	}
-	if err := w.WriteAsset(ctx, aB); err != nil {
+	if _, err := w.WriteAsset(ctx, aB); err != nil {
 		t.Fatalf("write B: %v", err)
 	}
 
@@ -217,7 +229,7 @@ func TestWriteAsset_DateFolderMove(t *testing.T) {
 	ctx := t.Context()
 
 	a1 := makeAsset(srcFS, "asset-a", "photo.jpg", checksumA, testDate)
-	if err := w.WriteAsset(ctx, a1); err != nil {
+	if _, err := w.WriteAsset(ctx, a1); err != nil {
 		t.Fatal(err)
 	}
 
@@ -228,13 +240,17 @@ func TestWriteAsset_DateFolderMove(t *testing.T) {
 
 	// Second run: date corrected to March 2025
 	w2, _ := NewLocalAssetWriter(destFS, ".")
-	if err := w2.BuildIndex(ctx, nil); err != nil {
+	if _, err := w2.BuildIndex(ctx, nil); err != nil {
 		t.Fatal(err)
 	}
 
 	a2 := makeAsset(srcFS, "asset-a", "photo.jpg", checksumA, testDate2)
-	if err := w2.WriteAsset(ctx, a2); err != nil {
+	outcome, err := w2.WriteAsset(ctx, a2)
+	if err != nil {
 		t.Fatal(err)
+	}
+	if outcome != OutcomeMoved {
+		t.Errorf("expected OutcomeMoved, got %v", outcome)
 	}
 
 	newDir := path.Join("2025", "2025-03")
@@ -259,19 +275,23 @@ func TestWriteAsset_FilenameChange(t *testing.T) {
 	ctx := t.Context()
 
 	a1 := makeAsset(srcFS, "asset-a", "photo.jpg", checksumA, testDate)
-	if err := w.WriteAsset(ctx, a1); err != nil {
+	if _, err := w.WriteAsset(ctx, a1); err != nil {
 		t.Fatal(err)
 	}
 
 	w2, _ := NewLocalAssetWriter(destFS, ".")
-	if err := w2.BuildIndex(ctx, nil); err != nil {
+	if _, err := w2.BuildIndex(ctx, nil); err != nil {
 		t.Fatal(err)
 	}
 
 	// Server-side rename
 	a2 := makeAsset(srcFS, "asset-a", "vacation.jpg", checksumA, testDate)
-	if err := w2.WriteAsset(ctx, a2); err != nil {
+	outcome, err := w2.WriteAsset(ctx, a2)
+	if err != nil {
 		t.Fatal(err)
+	}
+	if outcome != OutcomeMoved {
+		t.Errorf("expected OutcomeMoved on rename, got %v", outcome)
 	}
 
 	dir := path.Join("2025", "2025-01")

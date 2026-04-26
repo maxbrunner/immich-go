@@ -1,9 +1,12 @@
 package archive
 
 import (
+	"context"
 	"errors"
+	"fmt"
 	"os"
 
+	"github.com/gdamore/tcell/v2"
 	"github.com/simulot/immich-go/adapters"
 	"github.com/simulot/immich-go/adapters/folder"
 	"github.com/simulot/immich-go/internal/assettracker"
@@ -14,7 +17,6 @@ import (
 )
 
 func (ac *ArchiveCmd) Run(cmd *cobra.Command, adapter adapters.Reader) error {
-	// ready to run
 	ctx := cmd.Context()
 	log := ac.app.Log()
 	log.Info("in ArchiveCmd.Run", "archivePath", ac.ArchivePath)
@@ -28,20 +30,40 @@ func (ac *ArchiveCmd) Run(cmd *cobra.Command, adapter adapters.Reader) error {
 	}
 
 	p := ac.ArchivePath
-	err := os.MkdirAll(p, 0o755)
-	if err != nil {
+	if err := os.MkdirAll(p, 0o755); err != nil {
 		return err
 	}
 
 	destFS := osfs.DirFS(p)
+	var err error
 	ac.dest, err = folder.NewLocalAssetWriter(destFS, ".")
 	if err != nil {
 		return err
 	}
-	if err := ac.dest.BuildIndex(ctx, log.Logger); err != nil {
+	ac.indexCount, err = ac.dest.BuildIndex(ctx, log.Logger)
+	if err != nil {
 		return err
 	}
 
+	// Choose UI vs plain log
+	runner := ac.runUIMode
+	if _, err := tcell.NewScreen(); err != nil {
+		log.Warn("can't initialize screen, falling back to plain log", "err", err)
+		fmt.Println("can't initialize screen, falling back to plain log")
+		runner = ac.runPlain
+	}
+
+	return runner(ctx, adapter)
+}
+
+// runPlain runs the archive loop without a TUI (plain log output).
+func (ac *ArchiveCmd) runPlain(ctx context.Context, adapter adapters.Reader) error {
+	return ac.browseAndArchive(ctx, adapter)
+}
+
+// browseAndArchive is the core processing loop: reads from adapter.Browse, writes each asset.
+func (ac *ArchiveCmd) browseAndArchive(ctx context.Context, adapter adapters.Reader) error {
+	log := ac.app.Log()
 	gChan := adapter.Browse(ctx)
 	errCount := 0
 	for {
@@ -53,12 +75,12 @@ func (ac *ArchiveCmd) Run(cmd *cobra.Command, adapter adapters.Reader) error {
 				return nil
 			}
 			for _, a := range g.Assets {
-				err := ac.dest.WriteAsset(ctx, a)
-				if err == nil {
-					err = a.Close()
+				outcome, writeErr := ac.dest.WriteAsset(ctx, a)
+				if writeErr == nil {
+					writeErr = a.Close()
 				}
-				if err != nil {
-					ac.app.FileProcessor().RecordAssetError(ctx, a.File, int64(a.FileSize), fileevent.ErrorFileAccess, err)
+				if writeErr != nil {
+					ac.app.FileProcessor().RecordAssetError(ctx, a.File, int64(a.FileSize), fileevent.ErrorFileAccess, writeErr)
 					errCount++
 					if errCount > 5 {
 						err := errors.New("too many errors, aborting")
@@ -66,8 +88,20 @@ func (ac *ArchiveCmd) Run(cmd *cobra.Command, adapter adapters.Reader) error {
 						return err
 					}
 				} else {
-					// Asset successfully archived
-					ac.app.FileProcessor().RecordAssetProcessed(ctx, a.File, int64(a.FileSize), fileevent.ProcessedFileArchived)
+					switch outcome {
+					case folder.OutcomeDownloaded:
+						ac.app.FileProcessor().RecordAssetProcessed(ctx, a.File, int64(a.FileSize), fileevent.ProcessedFileArchived)
+						log.Info("downloaded", "file", a.File.Name())
+					case folder.OutcomeSkipped:
+						ac.app.FileProcessor().RecordAssetDiscarded(ctx, a.File, int64(a.FileSize), fileevent.DiscardedLocalDuplicate, "no change")
+						log.Debug("skipped (no change)", "file", a.File.Name())
+					case folder.OutcomeUpdated:
+						ac.app.FileProcessor().RecordAssetProcessed(ctx, a.File, int64(a.FileSize), fileevent.ProcessedMetadataUpdated)
+						log.Info("metadata updated", "file", a.File.Name())
+					case folder.OutcomeMoved:
+						ac.app.FileProcessor().RecordAssetProcessed(ctx, a.File, int64(a.FileSize), fileevent.ProcessedFileMoved)
+						log.Info("moved/renamed", "file", a.File.Name())
+					}
 				}
 			}
 		}

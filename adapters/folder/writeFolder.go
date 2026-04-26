@@ -19,6 +19,16 @@ import (
 	"github.com/simulot/immich-go/internal/fshelper/debugfiles"
 )
 
+// WriteOutcome describes the result of a WriteAsset call.
+type WriteOutcome int
+
+const (
+	OutcomeDownloaded WriteOutcome = iota // path A: new file downloaded and saved
+	OutcomeSkipped                        // path B: already on disk, metadata identical
+	OutcomeUpdated                        // path B: already on disk, JSON sidecar refreshed
+	OutcomeMoved                          // path B: already on disk, file moved or renamed (± metadata)
+)
+
 type closer interface {
 	Close() error
 }
@@ -53,7 +63,8 @@ func NewLocalAssetWriter(fsys fs.FS, writeToPath string) (*LocalAssetWriter, err
 // BuildIndex scans all existing JSON sidecars in the destination FS and builds an
 // in-memory index of checksum → file location. Must be called before WriteAsset.
 // Sidecars without a Checksum field (written before this change) are skipped.
-func (w *LocalAssetWriter) BuildIndex(ctx context.Context, log *slog.Logger) error {
+// Returns the number of indexed entries.
+func (w *LocalAssetWriter) BuildIndex(ctx context.Context, log *slog.Logger) (int, error) {
 	count := 0
 	err := fs.WalkDir(w.WriteToFS, ".", func(p string, d fs.DirEntry, err error) error {
 		if err != nil || d.IsDir() {
@@ -87,7 +98,7 @@ func (w *LocalAssetWriter) BuildIndex(ctx context.Context, log *slog.Logger) err
 	if log != nil && count > 0 {
 		log.Info("archive index loaded", "entries", count)
 	}
-	return err
+	return count, err
 }
 
 func (w *LocalAssetWriter) registerInFileset(dir, base string) {
@@ -115,21 +126,22 @@ func (w *LocalAssetWriter) WriteGroup(ctx context.Context, group *assets.Group) 
 		case <-ctx.Done():
 			return errors.Join(err, ctx.Err())
 		default:
-			err = errors.Join(err, w.WriteAsset(ctx, a))
+			_, writeErr := w.WriteAsset(ctx, a)
+			err = errors.Join(err, writeErr)
 		}
 	}
 	return err
 }
 
-func (w *LocalAssetWriter) WriteAsset(ctx context.Context, a *assets.Asset) error {
+func (w *LocalAssetWriter) WriteAsset(ctx context.Context, a *assets.Asset) (WriteOutcome, error) {
 	dir := w.pathOfAsset(a)
 	if err := w.ensureDir(dir); err != nil {
-		return err
+		return OutcomeDownloaded, err
 	}
 
 	select {
 	case <-ctx.Done():
-		return ctx.Err()
+		return OutcomeDownloaded, ctx.Err()
 	default:
 	}
 
@@ -160,7 +172,7 @@ func (w *LocalAssetWriter) buildMetadata(a *assets.Asset) assets.Metadata {
 }
 
 // writeNew downloads the asset and writes binary + JSON sidecar (path A).
-func (w *LocalAssetWriter) writeNew(ctx context.Context, dir string, a *assets.Asset, incomingMd assets.Metadata) error {
+func (w *LocalAssetWriter) writeNew(ctx context.Context, dir string, a *assets.Asset, incomingMd assets.Metadata) (WriteOutcome, error) {
 	base := incomingMd.FileName
 	if base == "" {
 		base = a.Base
@@ -175,42 +187,42 @@ func (w *LocalAssetWriter) writeNew(ctx context.Context, dir string, a *assets.A
 
 	r, err := a.OpenFile()
 	if err != nil {
-		return err
+		return OutcomeDownloaded, err
 	}
 	defer r.Close()
 
 	select {
 	case <-ctx.Done():
-		return ctx.Err()
+		return OutcomeDownloaded, ctx.Err()
 	default:
 	}
 
 	if err := fshelper.WriteFile(w.WriteToFS, path.Join(dir, base), r); err != nil {
-		return err
+		return OutcomeDownloaded, err
 	}
 
 	// XMP sidecar (copy from source if present)
 	if a.FromSideCar != nil {
 		scr, err := a.FromSideCar.File.Open()
 		if err != nil {
-			return err
+			return OutcomeDownloaded, err
 		}
 		debugfiles.TrackOpenFile(scr, a.FromSideCar.File.Name())
 		defer scr.Close()
 		defer debugfiles.TrackCloseFile(scr)
 		scw, err := fshelper.OpenFile(w.WriteToFS, path.Join(dir, base+".XMP"), os.O_RDWR|os.O_CREATE|os.O_TRUNC, 0o644)
 		if err != nil {
-			return err
+			return OutcomeDownloaded, err
 		}
 		_, err = io.Copy(scw, scr)
 		scw.Close()
 		if err != nil {
-			return err
+			return OutcomeDownloaded, err
 		}
 	}
 
 	if err := w.writeJSON(dir, base, &incomingMd); err != nil {
-		return err
+		return OutcomeDownloaded, err
 	}
 
 	// Register in index and fileset
@@ -219,13 +231,13 @@ func (w *LocalAssetWriter) writeNew(ctx context.Context, dir string, a *assets.A
 	}
 	w.registerInFileset(dir, base)
 
-	return nil
+	return OutcomeDownloaded, nil
 }
 
 // updateExisting handles an asset already present on disk (path B):
 // moves/renames if location or filename changed, then refreshes the JSON sidecar
 // if metadata changed. The binary is never re-downloaded.
-func (w *LocalAssetWriter) updateExisting(ctx context.Context, desiredDir string, a *assets.Asset, incomingMd assets.Metadata, entry indexEntry) error {
+func (w *LocalAssetWriter) updateExisting(_ context.Context, desiredDir string, a *assets.Asset, incomingMd assets.Metadata, entry indexEntry) (WriteOutcome, error) {
 	desiredBase := incomingMd.FileName
 	if desiredBase == "" {
 		desiredBase = entry.base
@@ -245,29 +257,41 @@ func (w *LocalAssetWriter) updateExisting(ctx context.Context, desiredDir string
 		}
 	}
 
+	moved := false
 	// Move/rename if location or name changed
 	if desiredDir != entry.dir || desiredBase != entry.base {
 		if err := w.ensureDir(desiredDir); err != nil {
-			return err
+			return OutcomeMoved, err
 		}
 		if err := w.moveFiles(entry.dir, entry.base, desiredDir, desiredBase); err != nil {
-			return err
+			return OutcomeMoved, err
 		}
 		w.deregisterFromFileset(entry.dir, entry.base)
 		w.registerInFileset(desiredDir, desiredBase)
 		entry = indexEntry{dir: desiredDir, base: desiredBase, metadata: entry.metadata}
 		w.index[a.Checksum] = entry
+		moved = true
 	}
 
 	// Refresh JSON sidecar only if metadata changed (preserves mtime for unchanged files)
 	if !metadataEqual(entry.metadata, incomingMd) {
 		if err := w.writeJSON(desiredDir, desiredBase, &incomingMd); err != nil {
-			return err
+			if moved {
+				return OutcomeMoved, err
+			}
+			return OutcomeUpdated, err
 		}
 		w.index[a.Checksum] = indexEntry{dir: desiredDir, base: desiredBase, metadata: incomingMd}
+		if moved {
+			return OutcomeMoved, nil
+		}
+		return OutcomeUpdated, nil
 	}
 
-	return nil
+	if moved {
+		return OutcomeMoved, nil
+	}
+	return OutcomeSkipped, nil
 }
 
 // moveFiles moves binary + JSON (and XMP if present) from old location to new.
