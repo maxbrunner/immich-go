@@ -27,6 +27,10 @@ type FSCanStat interface {
 	Stat(name string) (fs.FileInfo, error)
 }
 
+type FSCanRename interface {
+	Rename(oldPath, newPath string) error
+}
+
 type FSCanLink interface {
 	Lstat(name string) (fs.FileInfo, error)
 	Readlink(name string) (string, error)
@@ -74,6 +78,13 @@ func MkdirAll(fsys fs.FS, path string, perm fs.FileMode) error {
 	} else {
 		return errors.New("mkdirAll not supported")
 	}
+}
+
+func Rename(fsys fs.FS, oldPath, newPath string) error {
+	if fsys, ok := fsys.(FSCanRename); ok {
+		return fsys.Rename(oldPath, newPath)
+	}
+	return errors.New("rename not supported")
 }
 
 func Remove(fsys fs.FS, name string) error {

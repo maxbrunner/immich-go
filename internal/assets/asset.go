@@ -107,6 +107,9 @@ func (a *Asset) UseMetadata(md *Metadata) *Metadata {
 	if md == nil {
 		return nil
 	}
+	if md.FileName != "" {
+		a.OriginalFileName = md.FileName
+	}
 	a.Description = md.Description
 	a.Latitude = md.Latitude
 	a.Longitude = md.Longitude
