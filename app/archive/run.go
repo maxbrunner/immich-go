@@ -60,7 +60,24 @@ func (ac *ArchiveCmd) Run(cmd *cobra.Command, adapter adapters.Reader) error {
 
 // runPlain runs the archive loop without a TUI (plain log output).
 func (ac *ArchiveCmd) runPlain(ctx context.Context, adapter adapters.Reader) error {
-	return ac.browseAndArchive(ctx, adapter)
+	err := ac.browseAndArchive(ctx, adapter)
+	ac.printSummary()
+	return err
+}
+
+func (ac *ArchiveCmd) printSummary() {
+	counts := ac.app.FileProcessor().Logger().GetCounts()
+	fmt.Println()
+	fmt.Println("=== Archive Summary ===")
+	fmt.Printf("Local index:       %d\n", ac.indexCount)
+	fmt.Printf("Discovered:        %d images, %d videos\n",
+		counts[fileevent.DiscoveredImage], counts[fileevent.DiscoveredVideo])
+	fmt.Printf("Downloaded (new):  %d\n", counts[fileevent.ProcessedFileArchived])
+	fmt.Printf("Skipped:           %d\n", counts[fileevent.DiscardedLocalDuplicate])
+	fmt.Printf("Metadata updated:  %d\n", counts[fileevent.ProcessedMetadataUpdated])
+	fmt.Printf("Moved/renamed:     %d\n", counts[fileevent.ProcessedFileMoved])
+	fmt.Printf("Errors:            %d\n", counts[fileevent.ErrorFileAccess])
+	fmt.Println("=======================")
 }
 
 // browseAndArchive is the core processing loop: reads from adapter.Browse, writes each asset.
