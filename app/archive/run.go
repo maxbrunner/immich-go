@@ -47,7 +47,9 @@ func (ac *ArchiveCmd) Run(cmd *cobra.Command, adapter adapters.Reader) error {
 
 	// Choose UI vs plain log
 	runner := ac.runUIMode
-	if _, err := tcell.NewScreen(); err != nil {
+	if ac.NoUI {
+		runner = ac.runPlain
+	} else if _, err := tcell.NewScreen(); err != nil {
 		log.Warn("can't initialize screen, falling back to plain log", "err", err)
 		fmt.Println("can't initialize screen, falling back to plain log")
 		runner = ac.runPlain

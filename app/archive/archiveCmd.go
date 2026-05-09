@@ -16,6 +16,7 @@ import (
 
 type ArchiveCmd struct {
 	ArchivePath string
+	NoUI        bool // Disable UI
 
 	app        *app.Application
 	dest       *folder.LocalAssetWriter
@@ -33,6 +34,7 @@ func NewArchiveCommand(ctx context.Context, app *app.Application) *cobra.Command
 
 	cmd.PersistentFlags().StringVarP(&ac.ArchivePath, "write-to-folder", "w", "", "Path where to write the archive")
 	_ = cmd.MarkPersistentFlagRequired("write-to-folder")
+	cmd.PersistentFlags().BoolVar(&ac.NoUI, "no-ui", false, "Disable the user interface")
 
 	cmd.AddCommand(folder.NewFromFolderCommand(ctx, cmd, app, ac))
 	cmd.AddCommand(folder.NewFromICloudCommand(ctx, cmd, app, ac))
