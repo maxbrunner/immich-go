@@ -99,6 +99,14 @@ func (app *Application) SetSupportedMedia(sm filetypes.SupportedMedia) {
 	app.sm = sm
 }
 
+// NumErrors returns the number of errors recorded through ProcessError during
+// the run. Callers use it to fail the process when errors were tolerated (and
+// merely logged) rather than propagated, so that a scheduled run is reported as
+// failed instead of silently succeeding.
+func (app *Application) NumErrors() int64 {
+	return app.numErrors.Load()
+}
+
 func (app *Application) ProcessError(err error) error {
 	if err == nil {
 		return nil

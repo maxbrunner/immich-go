@@ -62,7 +62,33 @@ func (ac *ArchiveCmd) Run(cmd *cobra.Command, adapter adapters.Reader) error {
 func (ac *ArchiveCmd) runPlain(ctx context.Context, adapter adapters.Reader) error {
 	err := ac.browseAndArchive(ctx, adapter)
 	ac.printSummary()
-	return err
+	if err != nil {
+		return err
+	}
+	return ac.runOutcome()
+}
+
+// runOutcome turns a nominally successful run into an error when it clearly did
+// not do its job. The source adapter reports fetch failures through
+// app.ProcessError and then simply closes its channel, so without this check a
+// run in which every single Immich API call failed still exits 0 — which is how
+// a broken backup can look healthy to a scheduler for weeks.
+func (ac *ArchiveCmd) runOutcome() error {
+	counts := ac.app.FileProcessor().Logger().GetCounts()
+	discovered := counts[fileevent.DiscoveredImage] + counts[fileevent.DiscoveredVideo]
+
+	if n := ac.app.NumErrors(); n > 0 {
+		return fmt.Errorf("%d error(s) occurred during the run, see the log file for details", n)
+	}
+	if counts[fileevent.ErrorFileAccess] > 0 {
+		return fmt.Errorf("%d file(s) could not be written, see the log file for details", counts[fileevent.ErrorFileAccess])
+	}
+	// An empty result against a non-empty existing archive means the source
+	// returned nothing at all: an API/compatibility break, not an idle run.
+	if discovered == 0 && ac.indexCount > 0 {
+		return errors.New("the source returned no asset at all while the local archive is not empty: refusing to report success")
+	}
+	return nil
 }
 
 func (ac *ArchiveCmd) printSummary() {
@@ -76,7 +102,8 @@ func (ac *ArchiveCmd) printSummary() {
 	fmt.Printf("Skipped:           %d\n", counts[fileevent.DiscardedLocalDuplicate])
 	fmt.Printf("Metadata updated:  %d\n", counts[fileevent.ProcessedMetadataUpdated])
 	fmt.Printf("Moved/renamed:     %d\n", counts[fileevent.ProcessedFileMoved])
-	fmt.Printf("Errors:            %d\n", counts[fileevent.ErrorFileAccess])
+	fmt.Printf("Write errors:      %d\n", counts[fileevent.ErrorFileAccess])
+	fmt.Printf("Source errors:     %d\n", ac.app.NumErrors())
 	fmt.Println("=======================")
 }
 

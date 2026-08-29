@@ -20,7 +20,12 @@ type Asset struct {
 	DeviceAssetID string `json:"deviceAssetId"`
 	DeviceID      string `json:"deviceId"`
 	// duplicateId
-	Duration       string     `json:"duration"`
+
+	// Not used, and its type changed in Immich v3: a string ("0:00:00.00000")
+	// up to v2, a number of milliseconds (or null) from v3 on. Decoding it as a
+	// string made every /search/metadata page fail against a v3 server.
+	// Duration string `json:"duration"`
+
 	ExifInfo       ExifInfo   `json:"exifInfo"`
 	FileCreatedAt  ImmichTime `json:"fileCreatedAt"`
 	FileModifiedAt ImmichTime `json:"fileModifiedAt"`

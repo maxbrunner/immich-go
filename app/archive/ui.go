@@ -120,7 +120,7 @@ func (ac *ArchiveCmd) runUIMode(ctx context.Context, adapter adapters.Reader) er
 	if messages.Len() > 0 {
 		return errors.New(messages.String())
 	}
-	return nil
+	return ac.runOutcome()
 }
 
 func newArchiveModal(message string) tview.Primitive {
