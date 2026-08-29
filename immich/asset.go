@@ -3,7 +3,6 @@ package immich
 import (
 	"context"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"io"
 	"net/url"
@@ -24,7 +23,7 @@ type Asset struct {
 	// Not used, and its type changed in Immich v3: a string ("0:00:00.00000")
 	// up to v2, a number of milliseconds (or null) from v3 on. Decoding it as a
 	// string made every /search/metadata page fail against a v3 server.
-	// Duration string `json:"duration"`
+	// Duration       string     `json:"duration"`
 
 	ExifInfo       ExifInfo   `json:"exifInfo"`
 	FileCreatedAt  ImmichTime `json:"fileCreatedAt"`
@@ -154,12 +153,6 @@ const (
 
 func (ic *ImmichClient) AssetUpload(ctx context.Context, la *assets.Asset) (AssetResponse, error) {
 	return ic.uploadAsset(ctx, la, EndPointAssetUpload, "")
-}
-
-// ReplaceAsset is deprecated, use CopyAsset
-func (ic *ImmichClient) ReplaceAsset(ctx context.Context, ID string, la *assets.Asset) (AssetResponse, error) {
-	return AssetResponse{}, errors.New("ReplaceAsset end point is deprecated, use CopyAsset")
-	// return ic.uploadAsset(ctx, la, EndPointAssetReplace, ID)
 }
 
 type GetAssetOptions struct {
