@@ -26,6 +26,15 @@ func RootImmichGoCommand(ctx context.Context) (*cobra.Command, *app.Application)
 		Short:   "Immich-go is a command line application to interact with the Immich application using its API",
 		Long:    `An alternative to the immich-CLI command that doesn't depend on nodejs installation. It tries its best for importing google photos takeout archives.`,
 		Version: app.Version,
+
+		// A failure during a run is not a usage mistake. Without this, cobra
+		// appends the whole help text to every runtime error, which buries the
+		// actual message in scheduled-run logs and notification mails.
+		SilenceUsage: true,
+
+		// main() already prints the error before exiting non-zero; letting
+		// cobra print it too gave every failure two identical lines.
+		SilenceErrors: true,
 	}
 
 	// Create the application context
