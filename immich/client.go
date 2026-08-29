@@ -24,7 +24,7 @@ type ImmichClient struct {
 	endPoint       string        // Server API url
 	key            string        // User KEY
 	DeviceUUID     string        // Device
-	Retries        int           // Number of attempts on 500 errors
+	Retries        int           // Retries after the first attempt, on transient errors
 	RetriesDelay   time.Duration // Duration between retries
 	apiTraceWriter io.Writer     // If not nil, logs API calls to this writer
 
@@ -85,6 +85,27 @@ func OptionConnectionTimeout(d time.Duration) clientOption {
 	}
 }
 
+// OptionRetries sets how many times a transient failure (a 5xx, a 429, or a
+// network error) is retried after the first attempt. Zero disables retrying.
+func OptionRetries(n int) clientOption {
+	return func(ic *ImmichClient) error {
+		if n < 0 {
+			n = 0
+		}
+		ic.Retries = n
+		return nil
+	}
+}
+
+// OptionRetriesDelay sets the base backoff between retries; the wait grows with
+// each attempt.
+func OptionRetriesDelay(d time.Duration) clientOption {
+	return func(ic *ImmichClient) error {
+		ic.RetriesDelay = d
+		return nil
+	}
+}
+
 func OptionDryRun(dryRun bool) clientOption {
 	return func(ic *ImmichClient) error {
 		ic.dryRun = dryRun
@@ -123,8 +144,10 @@ func NewImmichClient(endPoint string, key string, options ...clientOption) (*Imm
 		},
 		key:          key,
 		DeviceUUID:   deviceUUID,
-		Retries:      1,
-		RetriesDelay: time.Second * 1,
+		// Three retries with a growing delay: enough to ride out the gateway
+		// stalls a hosted Immich produces, without labouring against an outage.
+		Retries:      3,
+		RetriesDelay: time.Second * 2,
 	}
 
 	ic.client = &http.Client{

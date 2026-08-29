@@ -11,6 +11,7 @@ import (
 	"net/http"
 	"net/url"
 	"sync/atomic"
+	"time"
 
 	"github.com/simulot/immich-go/internal/assets"
 	"github.com/simulot/immich-go/internal/fshelper"
@@ -66,6 +67,7 @@ type serverCall struct {
 	err                error
 	ctx                context.Context
 	hasResponseHandler bool
+	attempts           int // how many tries a failing call got, so the error can say
 }
 
 func (ic *ImmichClient) newServerCall(ctx context.Context, api string) *serverCall {
@@ -81,6 +83,7 @@ func (sc *serverCall) Err(req *http.Request, resp *http.Response, msg serverErro
 	ce := callError{
 		endPoint: sc.endPoint,
 		err:      sc.err,
+		attempts: sc.attempts,
 	}
 	if req != nil {
 		ce.method = req.Method
@@ -190,6 +193,58 @@ func putRequest(url string, opts ...serverRequestOption) requestFunction {
 	}
 }
 
+// retriableStatuses are transient by nature: the request was well-formed and
+// resending it later stands a good chance of succeeding. A hosted Immich behind
+// a gateway returns 502/504 whenever the upstream stalls, and one of those
+// should not cost a multi-hour archive run.
+var retriableStatuses = map[int]bool{
+	http.StatusTooManyRequests:     true, // 429
+	http.StatusInternalServerError: true, // 500
+	http.StatusBadGateway:          true, // 502
+	http.StatusServiceUnavailable:  true, // 503
+	http.StatusGatewayTimeout:      true, // 504
+}
+
+// replayable reports whether the request can safely be sent again: either it
+// carries no body, or it can regenerate one. Uploads set a body without
+// GetBody, so they are excluded.
+func replayable(req *http.Request) bool {
+	if req.Body == nil || req.Body == http.NoBody {
+		return true
+	}
+	return req.GetBody != nil
+}
+
+// replayBody regenerates a request body for a repeat attempt.
+func replayBody(req *http.Request) (io.ReadCloser, error) {
+	if req.GetBody == nil {
+		return nil, nil
+	}
+	return req.GetBody()
+}
+
+// drain lets the connection be reused rather than abandoned between attempts.
+func drain(resp *http.Response) {
+	if resp != nil && resp.Body != nil {
+		_, _ = io.Copy(io.Discard, resp.Body)
+		resp.Body.Close()
+	}
+}
+
+// waitBeforeRetry backs off, but gives up immediately if the caller is done.
+func (sc *serverCall) waitBeforeRetry(attempt int) error {
+	delay := sc.ic.RetriesDelay
+	if delay <= 0 {
+		delay = time.Second
+	}
+	select {
+	case <-time.After(time.Duration(attempt) * delay):
+		return nil
+	case <-sc.ctx.Done():
+		return sc.ctx.Err()
+	}
+}
+
 func (sc *serverCall) do(fnRequest requestFunction, opts ...serverResponseOption) error {
 	var (
 		resp *http.Response
@@ -201,16 +256,48 @@ func (sc *serverCall) do(fnRequest requestFunction, opts ...serverResponseOption
 		return sc.Err(req, nil, nil)
 	}
 
-	resp, err = sc.ic.client.Do(req)
-	// any non nil error must be returned
-	if err != nil {
-		sc.err = err
-		return sc.Err(req, nil, nil)
+	// Transient failures are retried rather than surfaced. The Retries and
+	// RetriesDelay fields have existed on the client since the beginning,
+	// documented as "number of attempts on 500 errors", but nothing ever read
+	// them: a single 502 failed the call outright.
+	attempts := sc.ic.Retries
+	if attempts < 0 {
+		attempts = 0
 	}
+	for attempt := 0; ; attempt++ {
+		if attempt > 0 {
+			body, gerr := replayBody(req)
+			if gerr != nil {
+				sc.err = gerr
+				return sc.Err(req, nil, nil)
+			}
+			req.Body = body
+			if werr := sc.waitBeforeRetry(attempt); werr != nil {
+				sc.err = werr
+				return sc.Err(req, nil, nil)
+			}
+		}
 
-	// Any StatusCode above 300 denotes a problem, we expect a JSON with the server's error
-	if resp.StatusCode >= 300 {
-		return sc.Err(req, resp, sc.decodeServerError(resp))
+		resp, err = sc.ic.client.Do(req)
+
+		transient := err != nil || (resp != nil && retriableStatuses[resp.StatusCode])
+		if transient && attempt < attempts && replayable(req) {
+			drain(resp)
+			continue
+		}
+
+		// any non nil error must be returned
+		if err != nil {
+			sc.err = err
+			return sc.Err(req, nil, nil)
+		}
+
+		// Any StatusCode above 300 denotes a problem, we expect a JSON with the server's error
+		if resp.StatusCode >= 300 {
+			sc.attempts = attempt + 1
+			return sc.Err(req, resp, sc.decodeServerError(resp))
+		}
+		break
 	}
 
 	// We have a success
@@ -277,7 +364,17 @@ func setJSONBody(object any) serverRequestOption {
 		if err != nil {
 			return err
 		}
-		req.Body = io.NopCloser(b)
+		// GetBody makes the request replayable, which is what qualifies it for
+		// a retry. It matters most for /search/metadata: a transient 502 there
+		// aborts the whole enumeration rather than losing a single asset.
+		// Uploads use setBody, which deliberately leaves GetBody nil, so they
+		// are never retried.
+		body := b.Bytes()
+		req.Body = io.NopCloser(bytes.NewReader(body))
+		req.ContentLength = int64(len(body))
+		req.GetBody = func() (io.ReadCloser, error) {
+			return io.NopCloser(bytes.NewReader(body)), nil
+		}
 		req.Header.Set("Content-Type", "application/json")
 		return err
 	}

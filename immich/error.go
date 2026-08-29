@@ -16,6 +16,7 @@ type callError struct {
 	status   int
 	err      error
 	message  serverError
+	attempts int // >1 when the call was retried before giving up
 }
 
 type serverError interface {
@@ -62,6 +63,9 @@ func (ce callError) Error() string {
 	head := fmt.Sprintf("%s, %s, %s", ce.endPoint, ce.method, ce.url)
 	if ce.status > 0 {
 		head += fmt.Sprintf(", %d %s", ce.status, http.StatusText(ce.status))
+	}
+	if ce.attempts > 1 {
+		head += fmt.Sprintf(", after %d attempts", ce.attempts)
 	}
 	lines := []string{head}
 	if ce.err != nil && !errors.Is(ce.err, &callError{}) {
